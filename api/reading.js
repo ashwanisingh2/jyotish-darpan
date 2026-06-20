@@ -164,10 +164,10 @@ module.exports = async function handler(req, res) {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   if (isRateLimited(req)) return res.status(429).json({ error: 'Too many requests. Please wait one minute.' });
-  const key = process.env.GEMINI_API_KEY;
+  const key = process.env.GROQ_API_KEY;
   if (!key) return res.status(503).json({ error: 'AI service is not configured.' });
   
-  const model = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+  const model = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
   let body;
   try {
     body = req.body || {};
@@ -196,44 +196,18 @@ module.exports = async function handler(req, res) {
     
     while (attempts < maxAttempts) {
       try {
-        const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`;
-        const schema = {
-          type: "OBJECT",
-          properties: {
-            overview: { type: "STRING" },
-            career: { type: "STRING" },
-            love: { type: "STRING" },
-            health_remedies: { type: "STRING" },
-            lucky_color: { type: "STRING" },
-            lucky_number: { type: "STRING" },
-            lucky_time: { type: "STRING" },
-            confidence: { type: "STRING" }
-          },
-          required: ["overview", "career", "love", "health_remedies", "lucky_color", "lucky_number", "lucky_time", "confidence"]
-        };
-        const genConfig = isStructured ? {
-          temperature: 0.3,
-          maxOutputTokens: 2048,
-          responseMimeType: 'application/json',
-          responseSchema: schema
-        } : {
-          maxOutputTokens: 1000,
-          temperature: 0.8
-        };
-        
-        const response = await fetch(endpoint, {
+        const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+          headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
           body: JSON.stringify({
-            systemInstruction: { parts: [{ text: getSystemInstruction(body.lang) }] },
-            contents: [{ role: 'user', parts: [{ text: prompt }] }],
-            generationConfig: genConfig,
-            safetySettings: [
-              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
-              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' }
-            ]
+            model,
+            messages: [
+              { role: 'system', content: getSystemInstruction(body.lang) },
+              { role: 'user', content: prompt }
+            ],
+            temperature: isStructured ? 0.3 : 0.8,
+            max_completion_tokens: isStructured ? 2048 : 1000,
+            ...(isStructured ? { response_format: { type: 'json_object' } } : {})
           }),
           signal: AbortSignal.timeout(20_000)
         });
@@ -243,7 +217,7 @@ module.exports = async function handler(req, res) {
           throw new Error(data.error?.message || 'Upstream API error');
         }
         
-        responseText = (data.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('\n').trim();
+        responseText = String(data.choices?.[0]?.message?.content || '').trim();
         if (!responseText) throw new Error('AI returned empty response.');
         break; // Success
       } catch (err) {
