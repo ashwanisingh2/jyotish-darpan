@@ -13,14 +13,8 @@
       ]
     }
   ],
-  "functions": {
-    "server.js": {
-      "includeFiles": "{index.html,index.css,js/**/*.js,enhancements.js,sw.js,manifest.webmanifest}"
-    }
-  },
   "rewrites": [
-    { "source": "/api/(.*)", "destination": "/server.js" },
-    { "source": "/health", "destination": "/server.js" },
+    { "source": "/health", "destination": "/api/health" },
     { "source": "/", "destination": "/index.html" }
   ]
 }
