@@ -1,5 +1,19 @@
 const SYSTEM_ENGLISH = 'You are a sophisticated modern Vedic astrologer with 30 years of experience. Respond in clear, elegant English. Give detailed, personalized, spiritually insightful readings. Always cover multiple life areas. Use relevant emojis. Be warm, accurate, and empowering. Never give generic advice. Clearly disclose when an exact astronomical calculation cannot be made from the supplied data. Never present spiritual guidance as medical, legal, or financial certainty.';
 const SYSTEM_HINGLISH = 'You are a sophisticated modern Vedic astrologer with 30 years of experience. Respond in a natural mix of Hindi and English (Hinglish) using Latin script. Give detailed, personalized, spiritually insightful readings. Always cover multiple life areas. Use relevant emojis. Be warm, accurate, and empowering. Never give generic advice. Clearly disclose when an exact astronomical calculation cannot be made from the supplied data. Never present spiritual guidance as medical, legal, or financial certainty.';
+const { cleanText, validDate, validTime } = require('../lib/validation');
+const rateBuckets = new Map();
+
+function isRateLimited(req) {
+  const key = String(req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'unknown').split(',')[0].trim();
+  const now = Date.now();
+  const bucket = rateBuckets.get(key);
+  if (!bucket || now - bucket.startedAt >= 60_000) {
+    rateBuckets.set(key, { startedAt: now, count: 1 });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > 10;
+}
 
 function getSystemInstruction(lang) {
   return lang === 'hinglish' ? SYSTEM_HINGLISH : SYSTEM_ENGLISH;
@@ -149,6 +163,7 @@ module.exports = async function handler(req, res) {
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (isRateLimited(req)) return res.status(429).json({ error: 'Too many requests. Please wait one minute.' });
   const key = process.env.GEMINI_API_KEY;
   if (!key) return res.status(503).json({ error: 'AI service is not configured.' });
   
@@ -160,12 +175,16 @@ module.exports = async function handler(req, res) {
     
     let prompt;
     if (isStructured) {
-      if (!body.name || !body.date || !body.time || !body.place) {
+      body.name = cleanText(body.name, 80);
+      body.place = cleanText(body.place, 160);
+      body.moonSign = cleanText(body.moonSign, 40);
+      body.dasha = cleanText(body.dasha, 80);
+      if (!body.name || !validDate(body.date) || !validTime(body.time) || !body.place) {
         return res.status(400).json({ error: 'Sab details bhariye: naam, date, time, place' });
       }
       prompt = buildAstrologyPrompt(body);
     } else {
-      prompt = typeof body.prompt === 'string' ? body.prompt.trim() : '';
+      prompt = cleanText(body.prompt, 6000);
       if (prompt.length < 5 || prompt.length > 6000) {
         return res.status(400).json({ error: 'Please provide a valid reading request.' });
       }
@@ -210,12 +229,13 @@ module.exports = async function handler(req, res) {
             contents: [{ role: 'user', parts: [{ text: prompt }] }],
             generationConfig: genConfig,
             safetySettings: [
-              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_NONE' },
-              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_NONE' }
+              { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+              { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+              { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' },
+              { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_MEDIUM_AND_ABOVE' }
             ]
-          })
+          }),
+          signal: AbortSignal.timeout(20_000)
         });
         
         const data = await response.json();
